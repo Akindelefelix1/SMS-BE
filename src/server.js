@@ -53,7 +53,7 @@ const requireRole = (...roles) => (req, res, next) => {
 };
 
 const getStudentByUser = async (userId) =>
-  prisma.student.findUnique({ where: { userId } });
+  prisma.student.findUnique({ where: { userId }, include: { department: true } });
 
 const scoreToGrade = (total) => {
   if (total >= 70) return "A";
@@ -927,7 +927,18 @@ app.delete("/api/tasks/:id", requireAuth, requireRole("admin", "super_admin"), a
 app.post("/api/admin/export", requireAuth, requireRole("admin", "super_admin"), async (_req, res) => {
   const data = await prisma.$transaction([
     prisma.department.findMany(),
-    prisma.user.findMany(),
+    prisma.user.findMany({
+      select: {
+        id: true,
+        username: true,
+        name: true,
+        role: true,
+        status: true,
+        email: true,
+        lastLogin: true,
+        createdAt: true,
+      },
+    }),
     prisma.student.findMany(),
     prisma.course.findMany(),
     prisma.registration.findMany(),
