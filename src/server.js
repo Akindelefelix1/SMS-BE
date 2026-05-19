@@ -120,6 +120,12 @@ const generateRegistrationNo = async (tx, { studentNo, academicYear, semester })
   return `REG-${yearCode}-${semesterCode}-${studentCode}-${String(count + 1).padStart(3, "0")}`;
 };
 
+const toDepartmentName = (value) => {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  return String(value.name || value.department || value.departmentName || "").trim();
+};
+
 const scoreToGrade = (total) => {
   if (total >= 70) return "A";
   if (total >= 60) return "B";
@@ -1026,13 +1032,24 @@ app.post("/api/admin/export", requireAuth, requireRole("admin", "super_admin"), 
         createdAt: true,
       },
     }),
-    prisma.student.findMany(),
+    prisma.student.findMany({ include: { department: true } }),
     prisma.course.findMany({ include: { department: true } }),
     prisma.registration.findMany(),
-    prisma.result.findMany(),
-    prisma.submission.findMany(),
+    prisma.result.findMany({ include: { student: true } }),
+    prisma.submission.findMany({ include: { student: true } }),
     prisma.task.findMany(),
   ]);
+
+  const students = data[2].map((student) => ({
+    id: student.id,
+    studentNo: student.studentNo,
+    name: student.name,
+    department: student.department ? student.department.name : "",
+    level: student.level,
+    status: student.status,
+    createdAt: student.createdAt,
+    updatedAt: student.updatedAt,
+  }));
 
   const courses = data[3].map((course) => ({
     id: course.id,
@@ -1043,14 +1060,43 @@ app.post("/api/admin/export", requireAuth, requireRole("admin", "super_admin"), 
     department: course.department ? course.department.name : "",
   }));
 
+  const results = data[5].map((result) => ({
+    id: result.id,
+    studentNo: result.student ? result.student.studentNo : "",
+    academicYear: result.academicYear,
+    semester: result.semester,
+    course: result.course,
+    unit: result.unit,
+    ca: result.ca,
+    exam: result.exam,
+    total: result.total,
+    grade: result.grade,
+    createdAt: result.createdAt,
+  }));
+
+  const submissions = data[6].map((submission) => ({
+    id: submission.id,
+    studentNo: submission.student ? submission.student.studentNo : "",
+    fileName: submission.fileName,
+    fileType: submission.fileType,
+    fileSize: submission.fileSize,
+    dataUrl: submission.dataUrl,
+    note: submission.note,
+    status: submission.status,
+    submittedAt: submission.submittedAt,
+    reviewedAt: submission.reviewedAt,
+    reviewer: submission.reviewer,
+    reviewNote: submission.reviewNote,
+  }));
+
   return sendOk(res, "Export ready", {
     departments: data[0],
     users: data[1],
-    students: data[2],
+    students,
     courses,
     registrations: data[4],
-    results: data[5],
-    submissions: data[6],
+    results,
+    submissions,
     tasks: data[7],
   });
 });
@@ -1076,6 +1122,10 @@ app.post("/api/admin/import", requireAuth, requireRole("admin", "super_admin"), 
   const departments = Array.isArray(payload.departments) ? payload.departments : [];
   const courses = Array.isArray(payload.courses) ? payload.courses : [];
   const students = Array.isArray(payload.students) ? payload.students : [];
+  const registrations = Array.isArray(payload.registrations) ? payload.registrations : [];
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  const submissions = Array.isArray(payload.submissions) ? payload.submissions : [];
+  const tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
 
   for (const dept of departments) {
     const name = String(dept.name || "").trim();
@@ -1089,7 +1139,7 @@ app.post("/api/admin/import", requireAuth, requireRole("admin", "super_admin"), 
 
   for (const course of courses) {
     if (!course.code || !course.title || !course.units) continue;
-    const departmentName = String(course.department || course.departmentName || "").trim();
+    const departmentName = toDepartmentName(course.department || course.departmentName);
     if (!departmentName) continue;
 
     const dept = await prisma.department.findUnique({ where: { name: departmentName } });
@@ -1116,7 +1166,7 @@ app.post("/api/admin/import", requireAuth, requireRole("admin", "super_admin"), 
   for (const student of students) {
     const studentNo = String(student.studentNo || "").trim();
     const name = String(student.name || "").trim();
-    const departmentName = String(student.department || "").trim();
+    const departmentName = toDepartmentName(student.department || student.departmentName);
     const level = String(student.level || "").trim();
     const status = String(student.status || "Active").trim();
     if (!studentNo || !name || !departmentName || !level) continue;
@@ -1145,6 +1195,129 @@ app.post("/api/admin/import", requireAuth, requireRole("admin", "super_admin"), 
         level,
         status,
         userId: user.id,
+      },
+    });
+  }
+
+  for (const item of registrations) {
+    const studentNo = String(item.studentNo || "").trim();
+    const semester = String(item.semester || "").trim();
+    const academicYear = String(item.academicYear || "").trim();
+    const courses = Array.isArray(item.courses) ? item.courses : [];
+    if (!studentNo || !semester || !academicYear) continue;
+
+    const student = await prisma.student.findUnique({ where: { studentNo } });
+    if (!student) continue;
+
+    const regNo = String(item.regNo || "").trim() || await generateRegistrationNo(prisma, { studentNo, academicYear, semester });
+    const existing = await prisma.registration.findFirst({
+      where: { studentId: student.id, regNo, academicYear, semester },
+    });
+    if (existing) continue;
+
+    await prisma.registration.create({
+      data: {
+        studentId: student.id,
+        studentNo,
+        regNo,
+        semester,
+        academicYear,
+        courses,
+      },
+    });
+  }
+
+  for (const item of results) {
+    const studentNo = String(item.studentNo || "").trim();
+    const academicYear = String(item.academicYear || "").trim();
+    const semester = String(item.semester || "").trim();
+    const course = String(item.course || "").trim().toUpperCase();
+    const unit = Number(item.unit || 0);
+    const ca = Number(item.ca || 0);
+    const exam = Number(item.exam || 0);
+    const total = Number(item.total !== undefined && item.total !== "" ? item.total : ca + exam);
+    if (!studentNo || !academicYear || !semester || !course || !unit) continue;
+
+    const student = await prisma.student.findUnique({ where: { studentNo } });
+    if (!student) continue;
+
+    await prisma.result.upsert({
+      where: {
+        studentId_academicYear_semester_course: {
+          studentId: student.id,
+          academicYear,
+          semester,
+          course,
+        },
+      },
+      update: {
+        unit,
+        ca,
+        exam,
+        total,
+        grade: item.grade || scoreToGrade(total),
+      },
+      create: {
+        studentId: student.id,
+        academicYear,
+        semester,
+        course,
+        unit,
+        ca,
+        exam,
+        total,
+        grade: item.grade || scoreToGrade(total),
+      },
+    });
+  }
+
+  for (const item of submissions) {
+    const studentNo = String(item.studentNo || "").trim();
+    const fileName = String(item.fileName || "").trim();
+    const fileType = String(item.fileType || "").trim();
+    const fileSize = Number(item.fileSize || 0);
+    const dataUrl = String(item.dataUrl || "").trim();
+    if (!studentNo || !fileName || !fileType || !fileSize || !dataUrl) continue;
+
+    const student = await prisma.student.findUnique({ where: { studentNo } });
+    if (!student) continue;
+
+    const existing = item.id
+      ? await prisma.submission.findUnique({ where: { id: item.id } })
+      : null;
+    if (existing) continue;
+
+    await prisma.submission.create({
+      data: {
+        ...(item.id ? { id: item.id } : {}),
+        studentId: student.id,
+        fileName,
+        fileType,
+        fileSize,
+        dataUrl,
+        note: String(item.note || ""),
+        status: String(item.status || "Pending"),
+        reviewedAt: item.reviewedAt ? new Date(item.reviewedAt) : null,
+        reviewer: item.reviewer || null,
+        reviewNote: item.reviewNote || null,
+      },
+    });
+  }
+
+  for (const item of tasks) {
+    const text = String(item.text || "").trim();
+    if (!text) continue;
+
+    await prisma.task.upsert({
+      where: { id: item.id || "__missing_task_id__" },
+      update: {
+        text,
+        completed: Boolean(item.completed),
+      },
+      create: {
+        ...(item.id ? { id: item.id } : {}),
+        text,
+        completed: Boolean(item.completed),
       },
     });
   }
