@@ -83,6 +83,43 @@ const requireRole = (...roles) => (req, res, next) => {
 const getStudentByUser = async (userId) =>
   prisma.student.findUnique({ where: { userId }, include: { department: true } });
 
+const formatStudentProfile = (student) => {
+  if (!student) return null;
+  return {
+    id: student.id,
+    studentNo: student.studentNo,
+    name: student.name,
+    department: student.department ? student.department.name : "",
+    departmentId: student.departmentId,
+    level: student.level,
+    status: student.status,
+    createdAt: student.createdAt,
+    updatedAt: student.updatedAt,
+  };
+};
+
+const getSemesterCode = (semester) => {
+  const normalized = String(semester || "").toLowerCase();
+  if (normalized.includes("first")) return "FS";
+  if (normalized.includes("second")) return "SS";
+  return normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase() || "SEM";
+};
+
+const generateRegistrationNo = async (tx, { studentNo, academicYear, semester }) => {
+  const yearCode = String(academicYear || "").replace(/\D/g, "") || new Date().getFullYear();
+  const studentCode = String(studentNo || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+  const semesterCode = getSemesterCode(semester);
+  const count = await tx.registration.count({
+    where: { studentNo, academicYear, semester },
+  });
+  return `REG-${yearCode}-${semesterCode}-${studentCode}-${String(count + 1).padStart(3, "0")}`;
+};
+
 const scoreToGrade = (total) => {
   if (total >= 70) return "A";
   if (total >= 60) return "B";
@@ -633,12 +670,11 @@ app.delete("/api/courses/:id", requireAuth, requireRole("admin", "super_admin"),
 
 app.post("/api/registrations", requireAuth, async (req, res) => {
   const studentNo = String(req.body.studentNo || "").trim();
-  const regNo = String(req.body.regNo || "").trim();
   const semester = String(req.body.semester || "").trim();
   const academicYear = String(req.body.academicYear || "").trim();
   const courses = Array.isArray(req.body.courses) ? req.body.courses : [];
 
-  if (!studentNo || !regNo || !semester || !academicYear) {
+  if (!studentNo || !semester || !academicYear) {
     return sendError(res, 400, "Registration fields are incomplete" );
   }
 
@@ -652,15 +688,18 @@ app.post("/api/registrations", requireAuth, async (req, res) => {
     }
   }
 
-  const registration = await prisma.registration.create({
-    data: {
-      studentId: student.id,
-      studentNo,
-      regNo,
-      semester,
-      academicYear,
-      courses,
-    },
+  const registration = await prisma.$transaction(async (tx) => {
+    const regNo = await generateRegistrationNo(tx, { studentNo, academicYear, semester });
+    return tx.registration.create({
+      data: {
+        studentId: student.id,
+        studentNo,
+        regNo,
+        semester,
+        academicYear,
+        courses,
+      },
+    });
   });
 
   return sendOk(res, "Registration saved", registration);
@@ -859,6 +898,7 @@ app.get("/api/students/me/dashboard", requireAuth, requireRole("student"), async
 
   return sendOk(res, "Student dashboard loaded", {
     student,
+    profile: formatStudentProfile(student),
     registrations,
     results,
     latestResults,
