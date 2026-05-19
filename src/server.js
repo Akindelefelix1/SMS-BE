@@ -10,7 +10,11 @@ const app = express();
 const prisma = new PrismaClient();
 
 const PORT = Number(process.env.PORT || 8080);
-const JWT_SECRET = process.env.JWT_SECRET || "change-me";
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (process.env.NODE_ENV === "production" && !JWT_SECRET) {
+  throw new Error("JWT_SECRET must be set in production");
+}
 
 app.use(cors());
 app.use(express.json({ limit: "6mb" }));
