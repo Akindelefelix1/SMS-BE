@@ -16,7 +16,31 @@ if (process.env.NODE_ENV === "production" && !JWT_SECRET) {
   throw new Error("JWT_SECRET must be set in production");
 }
 
-app.use(cors());
+const rawCorsOrigins = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || "");
+const defaultCorsOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://localhost:8080",
+  "https://smsfrontend-hlja.onrender.com",
+];
+const allowedOrigins = rawCorsOrigins
+  ? rawCorsOrigins
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  : defaultCorsOrigins;
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json({ limit: "6mb" }));
 
 const sendOk = (res, message, data) => res.json({ status: "ok", message, data });
