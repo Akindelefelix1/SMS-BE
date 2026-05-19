@@ -33,6 +33,7 @@ model Department {
   id       String    @id @default(cuid())
   name     String    @unique
   students Student[]
+  courses  Course[]
 }
 
 model Student {
@@ -53,11 +54,13 @@ model Student {
 }
 
 model Course {
-  id       String @id @default(cuid())
-  code     String @unique
-  title    String
-  units    Int
-  semester String
+  id           String     @id @default(cuid())
+  code         String     @unique
+  title        String
+  units        Int
+  semester     String
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
 }
 
 model Registration {

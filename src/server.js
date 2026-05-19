@@ -207,7 +207,7 @@ app.get("/api/admin/overview", requireAuth, requireRole("admin", "super_admin"),
         },
       }),
       prisma.student.findMany({ include: { department: true } }),
-      prisma.course.findMany({ orderBy: { code: "asc" } }),
+      prisma.course.findMany({ orderBy: { code: "asc" }, include: { department: true } }),
       prisma.registration.findMany({ orderBy: { createdAt: "desc" } }),
       prisma.result.findMany({ orderBy: { createdAt: "desc" } }),
       prisma.submission.findMany({ orderBy: { submittedAt: "desc" } }),
@@ -331,8 +331,12 @@ app.put("/api/departments/:id", requireAuth, requireRole("admin", "super_admin")
 });
 
 app.delete("/api/departments/:id", requireAuth, requireRole("admin", "super_admin"), async (req, res) => {
-  const count = await prisma.student.count({ where: { departmentId: req.params.id } });
-  if (count) return sendError(res, 400, "Cannot delete department assigned to students");
+  const [studentCount, courseCount] = await Promise.all([
+    prisma.student.count({ where: { departmentId: req.params.id } }),
+    prisma.course.count({ where: { departmentId: req.params.id } }),
+  ]);
+  if (studentCount) return sendError(res, 400, "Cannot delete department assigned to students");
+  if (courseCount) return sendError(res, 400, "Cannot delete department assigned to courses");
 
   await prisma.department.delete({ where: { id: req.params.id } });
   return sendOk(res, "Department deleted", null);
@@ -552,16 +556,23 @@ app.delete("/api/students/:id", requireAuth, requireRole("admin", "super_admin")
 });
 
 app.get("/api/courses", requireAuth, async (_req, res) => {
-  const courses = await prisma.course.findMany({ orderBy: { code: "asc" } });
+  const courses = await prisma.course.findMany({
+    orderBy: { code: "asc" },
+    include: { department: true },
+  });
   return sendOk(res, "Courses loaded", courses);
 });
 
 app.get("/api/courses/options", requireAuth, async (_req, res) => {
-  const courses = await prisma.course.findMany({ orderBy: { code: "asc" } });
+  const courses = await prisma.course.findMany({
+    orderBy: { code: "asc" },
+    include: { department: true },
+  });
   const options = courses.map((course) => ({
     id: course.id,
     label: `${course.code} - ${course.title}`,
     semester: course.semester,
+    department: course.department ? course.department.name : "",
   }));
   return sendOk(res, "Course options loaded", options);
 });
@@ -571,16 +582,20 @@ app.post("/api/courses", requireAuth, requireRole("admin", "super_admin"), async
   const title = String(req.body.title || "").trim();
   const units = Number(req.body.units || 0);
   const semester = String(req.body.semester || "").trim();
+  const departmentName = String(req.body.department || "").trim();
 
-  if (!code || !title || !units || !semester) {
-    return sendError(res, 400, "Course code, title, units, and semester are required");
+  if (!code || !title || !units || !semester || !departmentName) {
+    return sendError(res, 400, "Course code, title, units, semester, and department are required");
   }
+
+  const dept = await prisma.department.findUnique({ where: { name: departmentName } });
+  if (!dept) return sendError(res, 400, "Please select a valid department");
 
   const duplicate = await prisma.course.findUnique({ where: { code } });
   if (duplicate) return sendError(res, 409, "Course code already exists");
 
   const course = await prisma.course.create({
-    data: { code, title, units, semester },
+    data: { code, title, units, semester, departmentId: dept.id },
   });
   return sendOk(res, "Course created", course);
 });
@@ -590,10 +605,14 @@ app.put("/api/courses/:id", requireAuth, requireRole("admin", "super_admin"), as
   const title = String(req.body.title || "").trim();
   const units = Number(req.body.units || 0);
   const semester = String(req.body.semester || "").trim();
+  const departmentName = String(req.body.department || "").trim();
 
-  if (!code || !title || !units || !semester) {
-    return sendError(res, 400, "Course code, title, units, and semester are required");
+  if (!code || !title || !units || !semester || !departmentName) {
+    return sendError(res, 400, "Course code, title, units, semester, and department are required");
   }
+
+  const dept = await prisma.department.findUnique({ where: { name: departmentName } });
+  if (!dept) return sendError(res, 400, "Please select a valid department");
 
   const duplicate = await prisma.course.findFirst({
     where: { code, NOT: { id: req.params.id } },
@@ -602,7 +621,7 @@ app.put("/api/courses/:id", requireAuth, requireRole("admin", "super_admin"), as
 
   const course = await prisma.course.update({
     where: { id: req.params.id },
-    data: { code, title, units, semester },
+    data: { code, title, units, semester, departmentId: dept.id },
   });
   return sendOk(res, "Course updated", course);
 });
@@ -968,18 +987,27 @@ app.post("/api/admin/export", requireAuth, requireRole("admin", "super_admin"), 
       },
     }),
     prisma.student.findMany(),
-    prisma.course.findMany(),
+    prisma.course.findMany({ include: { department: true } }),
     prisma.registration.findMany(),
     prisma.result.findMany(),
     prisma.submission.findMany(),
     prisma.task.findMany(),
   ]);
 
+  const courses = data[3].map((course) => ({
+    id: course.id,
+    code: course.code,
+    title: course.title,
+    units: course.units,
+    semester: course.semester,
+    department: course.department ? course.department.name : "",
+  }));
+
   return sendOk(res, "Export ready", {
     departments: data[0],
     users: data[1],
     students: data[2],
-    courses: data[3],
+    courses,
     registrations: data[4],
     results: data[5],
     submissions: data[6],
@@ -1021,18 +1049,26 @@ app.post("/api/admin/import", requireAuth, requireRole("admin", "super_admin"), 
 
   for (const course of courses) {
     if (!course.code || !course.title || !course.units) continue;
+    const departmentName = String(course.department || course.departmentName || "").trim();
+    if (!departmentName) continue;
+
+    const dept = await prisma.department.findUnique({ where: { name: departmentName } });
+    if (!dept) continue;
+
     await prisma.course.upsert({
       where: { code: course.code },
       update: {
         title: course.title,
         units: Number(course.units || 0),
         semester: course.semester || "First Semester",
+        departmentId: dept.id,
       },
       create: {
         code: course.code,
         title: course.title,
         units: Number(course.units || 0),
         semester: course.semester || "First Semester",
+        departmentId: dept.id,
       },
     });
   }
